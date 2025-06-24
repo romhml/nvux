@@ -1,0 +1,93 @@
+#!/bin/sh
+
+show_help() {
+    cat << EOF
+nvux - Open files in existing neovim instance within tmux
+
+USAGE:
+    nvux [OPTIONS] [FILE] [+LINE]
+
+OPTIONS:
+    -h, --help        Show this help message and exit
+
+ARGUMENTS:
+    FILE              Path to file to open (optional)
+    +LINE             Line number to jump to after opening file (optional)
+                      Must be preceded by '+' (e.g., +42)
+
+DESCRIPTION:
+    nvux opens files in an existing Neovim instance running
+    within a tmux session. It searches for active Neovim processes in the
+    current tmux session and opens the specified file in that instance.
+    
+    If no existing Neovim instance is found, nvux will create one in a new pane.
+    When not running within a tmux session, nvux falls back to launching
+    regular Neovim.
+
+EXAMPLES:
+    nvux                          # Open nvim in existing tmux instance
+    nvux file.txt                 # Open file.txt
+    nvux file.txt +25             # Open file.txt and jump to line 25
+    nvux /path/to/script.sh +1    # Open script.sh and jump to first line
+EOF
+}
+
+# Parse options
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            echo "Use -h for help" >&2
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+    shift
+done
+
+FILE="$1"
+LINE="$2"
+
+# Fallback to regular nvim if no tmux
+if ! tmux info &>/dev/null; then
+    exec nvim "$@"
+    exit
+fi
+
+# Get current tmux session
+SESSION=$(tmux display-message -p '#S')
+
+# Find panes running nvim across ALL sessions and windows
+NVIM_INFO=$(tmux list-panes -s -F '#{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' | grep nvim | head -1)
+
+if [ -n "$NVIM_INFO" ]; then
+    # Extract the session:window.pane part
+    NVIM_TARGET=$(echo "$NVIM_INFO" | cut -d' ' -f1)
+
+    # Switch to the session and window containing nvim
+    tmux switch-client -t "$NVIM_TARGET"
+    tmux select-pane -t "$NVIM_TARGET"
+
+    # Sends an escape in case the user is in insert mode.
+    tmux send-keys -t "$NVIM_TARGET" Escape
+
+    # Open file in existing nvim
+    if [ -n "$LINE" ]; then
+        tmux send-keys -t "$NVIM_TARGET" ":e $FILE | $LINE" Enter
+    else
+        tmux send-keys -t "$NVIM_TARGET" ":e $FILE" Enter
+    fi
+else
+    # Create new pane with nvim in current session
+    if [ -n "$FILE" ]; then
+        tmux new-window -c "$(pwd)" "nvim $*"
+    else
+        tmux new-window -c "$(pwd)" "nvim"
+    fi
+fi
